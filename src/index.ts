@@ -10,8 +10,10 @@ import {
 } from "./services.js";
 import { PredictionRequestBody } from "./types.js";
 import { buildTeamPredictionPayload } from "./mapping.js";
+import { createAutoTrader, readConfigFromEnv } from "./autotrader.js";
 
-const server = new McpServer({ name: "de-polymarket-mcp", version: "0.2.0" });
+const server = new McpServer({ name: "de-polymarket-mcp", version: "0.3.0" });
+const trader = createAutoTrader(readConfigFromEnv());
 
 server.registerTool(
   "fetch_polymarket_markets",
@@ -88,6 +90,45 @@ server.registerTool(
   async ({ eventType, event, teamA, teamB }) => {
     const payload = buildTeamPredictionPayload({ eventType, event, teamA, teamB });
     return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
+  },
+);
+
+server.registerTool(
+  "start_auto_trader",
+  {
+    title: "Start Auto Trader",
+    description: "Starts continuous market polling and auto trading loop.",
+    inputSchema: {},
+  },
+  async () => {
+    const status = await trader.start();
+    return { content: [{ type: "text", text: JSON.stringify(status, null, 2) }] };
+  },
+);
+
+server.registerTool(
+  "stop_auto_trader",
+  {
+    title: "Stop Auto Trader",
+    description: "Stops the running auto trader loop.",
+    inputSchema: {},
+  },
+  async () => {
+    const status = trader.stop();
+    return { content: [{ type: "text", text: JSON.stringify(status, null, 2) }] };
+  },
+);
+
+server.registerTool(
+  "get_auto_trader_status",
+  {
+    title: "Get Auto Trader Status",
+    description: "Returns whether bot is running and current in-memory position count.",
+    inputSchema: {},
+  },
+  async () => {
+    const status = trader.getStatus();
+    return { content: [{ type: "text", text: JSON.stringify(status, null, 2) }] };
   },
 );
 

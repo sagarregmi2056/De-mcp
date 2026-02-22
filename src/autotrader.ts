@@ -8,7 +8,7 @@ import {
 } from "./services.js";
 import { CandidateInput, EventInput, NormalizedMarket } from "./types.js";
 
-interface AutoTraderConfig {
+export interface AutoTraderConfig {
   predictionApiBaseUrl: string;
   predictionApiKey: string;
   destinyEngineApiBaseUrl: string;
@@ -32,9 +32,14 @@ interface Position {
   openedAt: string;
 }
 
-const positions = new Map<string, Position>();
+interface AutoTraderState {
+  running: boolean;
+  startedAt: string | null;
+  positions: number;
+  dryRun: boolean;
+}
 
-function readConfig(): AutoTraderConfig {
+export function readConfigFromEnv(): AutoTraderConfig {
   return {
     predictionApiBaseUrl: process.env.PREDICTION_API_BASE_URL ?? "",
     predictionApiKey: process.env.PREDICTION_API_KEY ?? "",
@@ -51,211 +56,243 @@ function readConfig(): AutoTraderConfig {
   };
 }
 
-function isApprovedMarket(market: NormalizedMarket, cfg: AutoTraderConfig): boolean {
-  if (cfg.approvedMarketKeywords.length === 0) return true;
-  const q = market.question.toLowerCase();
-  return cfg.approvedMarketKeywords.some((keyword) => q.includes(keyword));
-}
+export function createAutoTrader(config: AutoTraderConfig) {
+  const cfg = config;
+  const positions = new Map<string, Position>();
+  let timer: NodeJS.Timeout | null = null;
+  let startedAt: string | null = null;
 
-function parseTeams(question: string): [string, string] | null {
-  const normalized = question.replace(/\s+/g, " ");
-  const separators = [" vs ", " v "];
-  for (const sep of separators) {
-    const index = normalized.toLowerCase().indexOf(sep);
-    if (index > 0) {
-      const left = normalized.slice(0, index).trim();
-      const right = normalized.slice(index + sep.length).split("?")[0].trim();
-      if (left && right) return [left, right];
+  function validateConfig(): void {
+    if (!cfg.predictionApiBaseUrl) throw new Error("PREDICTION_API_BASE_URL is required");
+    if (!cfg.destinyEngineApiBaseUrl && !cfg.dryRun) {
+      throw new Error("DESTINY_ENGINE_API_BASE_URL is required when DRY_RUN=false");
     }
   }
-  return null;
-}
 
-function fallbackCandidate(name: string): CandidateInput {
-  return {
-    name,
-    birth_date: "2000-01-01",
-    birth_time: null,
-    birth_place: "Unknown",
-    birth_country: "Unknown",
-    birth_timezone: "UTC",
-    lat: 0,
-    lon: 0,
-    lat_dir: "N",
-    lon_dir: "E",
-    gender: "unknown",
-  };
-}
-
-function fallbackEvent(market: NormalizedMarket): EventInput {
-  return {
-    event_name: market.question,
-    event_date: market.eventDate ?? new Date().toISOString().slice(0, 10),
-    event_time: "00:00:00",
-    event_location: market.eventLocation ?? "Unknown",
-    event_timezone: "UTC",
-    event_lat: 0,
-    event_lon: 0,
-    event_lat_dir: "N",
-    event_lon_dir: "E",
-  };
-}
-
-function findOutcomeIndexByName(outcomes: string[], winnerName: string): number {
-  const winner = winnerName.toLowerCase();
-  const idx = outcomes.findIndex((o) => winner.includes(o.toLowerCase()) || o.toLowerCase().includes(winner));
-  return idx >= 0 ? idx : 0;
-}
-
-function computeExitTargets(entryCents: number): { tp: number | null; sl: number | null } {
-  if (entryCents < 40) return { tp: 80, sl: 10 };
-  if (entryCents < 50) return { tp: 90, sl: 20 };
-  return { tp: null, sl: null };
-}
-
-async function placeEngineOrder(cfg: AutoTraderConfig, payload: Record<string, unknown>): Promise<void> {
-  if (cfg.dryRun) {
-    console.log("[DRY_RUN] ENGINE_ORDER", JSON.stringify(payload));
-    return;
+  function isApprovedMarket(market: NormalizedMarket): boolean {
+    if (cfg.approvedMarketKeywords.length === 0) return true;
+    const q = market.question.toLowerCase();
+    return cfg.approvedMarketKeywords.some((keyword) => q.includes(keyword));
   }
 
-  const headers: Record<string, string> = { "content-type": "application/json" };
-  if (cfg.destinyEngineApiKey) headers.authorization = `Bearer ${cfg.destinyEngineApiKey}`;
+  function parseTeams(question: string): [string, string] | null {
+    const normalized = question.replace(/\s+/g, " ");
+    const separators = [" vs ", " v "];
+    for (const sep of separators) {
+      const index = normalized.toLowerCase().indexOf(sep);
+      if (index > 0) {
+        const left = normalized.slice(0, index).trim();
+        const right = normalized.slice(index + sep.length).split("?")[0].trim();
+        if (left && right) return [left, right];
+      }
+    }
+    return null;
+  }
 
-  const response = await fetch(`${cfg.destinyEngineApiBaseUrl.replace(/\/$/, "")}/orders`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  });
+  function fallbackCandidate(name: string): CandidateInput {
+    return {
+      name,
+      birth_date: "2000-01-01",
+      birth_time: null,
+      birth_place: "Unknown",
+      birth_country: "Unknown",
+      birth_timezone: "UTC",
+      lat: 0,
+      lon: 0,
+      lat_dir: "N",
+      lon_dir: "E",
+      gender: "unknown",
+    };
+  }
 
-  if (!response.ok) throw new Error(`Destiny Engine order failed: ${response.status} ${response.statusText}`);
-}
+  function fallbackEvent(market: NormalizedMarket): EventInput {
+    return {
+      event_name: market.question,
+      event_date: market.eventDate ?? new Date().toISOString().slice(0, 10),
+      event_time: "00:00:00",
+      event_location: market.eventLocation ?? "Unknown",
+      event_timezone: "UTC",
+      event_lat: 0,
+      event_lon: 0,
+      event_lat_dir: "N",
+      event_lon_dir: "E",
+    };
+  }
 
-function getCurrentCents(market: NormalizedMarket, optionLabel: string): number {
-  const idx = market.outcomes.findIndex((o) => o.toLowerCase() === optionLabel.toLowerCase());
-  const raw = idx >= 0 ? market.outcomePrices[idx] : market.outcomePrices[0];
-  return Math.round((raw ?? 0) * 100);
-}
+  function findOutcomeIndexByName(outcomes: string[], winnerName: string): number {
+    const winner = winnerName.toLowerCase();
+    const idx = outcomes.findIndex((o) => winner.includes(o.toLowerCase()) || o.toLowerCase().includes(winner));
+    return idx >= 0 ? idx : 0;
+  }
 
-async function maybeClosePosition(market: NormalizedMarket, cfg: AutoTraderConfig): Promise<void> {
-  const position = positions.get(market.id);
-  if (!position) return;
+  function computeExitTargets(entryCents: number): { tp: number | null; sl: number | null } {
+    if (entryCents < 40) return { tp: 80, sl: 10 };
+    if (entryCents < 50) return { tp: 90, sl: 20 };
+    return { tp: null, sl: null };
+  }
 
-  if (position.takeProfitCents === null && position.stopLossCents === null) return;
+  async function placeEngineOrder(payload: Record<string, unknown>): Promise<void> {
+    if (cfg.dryRun) {
+      console.log("[DRY_RUN] ENGINE_ORDER", JSON.stringify(payload));
+      return;
+    }
 
-  const currentCents = getCurrentCents(market, position.optionLabel);
-  const hitTp = position.takeProfitCents !== null && currentCents >= position.takeProfitCents;
-  const hitSl = position.stopLossCents !== null && currentCents <= position.stopLossCents;
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (cfg.destinyEngineApiKey) headers.authorization = `Bearer ${cfg.destinyEngineApiKey}`;
 
-  if (!hitTp && !hitSl) return;
+    const response = await fetch(`${cfg.destinyEngineApiBaseUrl.replace(/\/$/, "")}/orders`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
 
-  await placeEngineOrder(cfg, {
-    action: "SELL",
-    marketId: position.marketId,
-    option: position.optionLabel,
-    side: position.side,
-    currentCents,
-    reason: hitTp ? "TAKE_PROFIT" : "STOP_LOSS",
-  });
+    if (!response.ok) throw new Error(`Destiny Engine order failed: ${response.status} ${response.statusText}`);
+  }
 
-  positions.delete(market.id);
-  console.log(`[CLOSE] market=${market.id} option=${position.optionLabel} cents=${currentCents}`);
-}
+  function getCurrentCents(market: NormalizedMarket, optionLabel: string): number {
+    const idx = market.outcomes.findIndex((o) => o.toLowerCase() === optionLabel.toLowerCase());
+    const raw = idx >= 0 ? market.outcomePrices[idx] : market.outcomePrices[0];
+    return Math.round((raw ?? 0) * 100);
+  }
 
-async function maybeOpenPosition(market: NormalizedMarket, cfg: AutoTraderConfig): Promise<void> {
-  if (positions.has(market.id) || !isApprovedMarket(market, cfg)) return;
+  async function maybeClosePosition(market: NormalizedMarket): Promise<void> {
+    const position = positions.get(market.id);
+    if (!position) return;
 
-  const marketType = detectMarketType(market);
-  if (marketType === "unknown") return;
+    if (position.takeProfitCents === null && position.stopLossCents === null) return;
 
-  const teams = parseTeams(market.question);
-  if (!teams) return;
+    const currentCents = getCurrentCents(market, position.optionLabel);
+    const hitTp = position.takeProfitCents !== null && currentCents >= position.takeProfitCents;
+    const hitSl = position.stopLossCents !== null && currentCents <= position.stopLossCents;
 
-  const [teamA, teamB] = teams;
-  const payload = buildTeamPredictionPayload({
-    eventType: marketType,
-    event: fallbackEvent(market),
-    teamA: { teamName: teamA, captain: fallbackCandidate(teamA) },
-    teamB: { teamName: teamB, captain: fallbackCandidate(teamB) },
-  });
+    if (!hitTp && !hitSl) return;
 
-  const mjRaw = await sendPredictionRequest(cfg.predictionApiBaseUrl, payload, cfg.predictionApiKey || undefined);
-  const prediction = parseMjPredictionResponse(mjRaw);
+    await placeEngineOrder({
+      action: "SELL",
+      marketId: position.marketId,
+      option: position.optionLabel,
+      side: position.side,
+      currentCents,
+      reason: hitTp ? "TAKE_PROFIT" : "STOP_LOSS",
+    });
 
-  const winnerIndex = findOutcomeIndexByName(market.outcomes, prediction.winnerName);
-  const loserIndex = winnerIndex === 0 ? 1 : 0;
-  const hasDrawOption = market.outcomes.some((o) => o.toLowerCase().includes("draw"));
+    positions.delete(market.id);
+    console.log(`[CLOSE] market=${market.id} option=${position.optionLabel} cents=${currentCents}`);
+  }
 
-  const selectedOption = hasDrawOption
-    ? market.outcomes[loserIndex] ?? market.outcomes[0] ?? "Unknown"
-    : market.outcomes[winnerIndex] ?? market.outcomes[0] ?? "Unknown";
+  async function maybeOpenPosition(market: NormalizedMarket): Promise<void> {
+    if (positions.has(market.id) || !isApprovedMarket(market)) return;
 
-  const selectedCents = Math.round((market.outcomePrices[hasDrawOption ? loserIndex : winnerIndex] ?? 0) * 100);
+    const marketType = detectMarketType(market);
+    if (marketType === "unknown") return;
 
-  const decision = evaluateDecision({
-    selectedOption,
-    selectedCents,
-    hasDrawOption,
-    predictionDiffPct: prediction.differencePct,
-  });
+    const teams = parseTeams(market.question);
+    if (!teams) return;
 
-  if (!decision.shouldTrade || !decision.side || decision.entryCents === undefined) return;
+    const [teamA, teamB] = teams;
+    const payload = buildTeamPredictionPayload({
+      eventType: marketType,
+      event: fallbackEvent(market),
+      teamA: { teamName: teamA, captain: fallbackCandidate(teamA) },
+      teamB: { teamName: teamB, captain: fallbackCandidate(teamB) },
+    });
 
-  const side = decision.side.startsWith("NO:") ? "NO" : "YES";
-  const { tp, sl } = computeExitTargets(decision.entryCents);
+    const mjRaw = await sendPredictionRequest(cfg.predictionApiBaseUrl, payload, cfg.predictionApiKey || undefined);
+    const prediction = parseMjPredictionResponse(mjRaw);
 
-  await placeEngineOrder(cfg, {
-    action: "BUY",
-    marketId: market.id,
-    option: selectedOption,
-    side,
-    entryCents: decision.entryCents,
-    prediction,
-    reason: decision.reason,
-  });
+    const winnerIndex = findOutcomeIndexByName(market.outcomes, prediction.winnerName);
+    const loserIndex = winnerIndex === 0 ? 1 : 0;
+    const hasDrawOption = market.outcomes.some((o) => o.toLowerCase().includes("draw"));
 
-  positions.set(market.id, {
-    marketId: market.id,
-    optionLabel: selectedOption,
-    side,
-    entryCents: decision.entryCents,
-    takeProfitCents: tp,
-    stopLossCents: sl,
-    openedAt: new Date().toISOString(),
-  });
+    const selectedOption = hasDrawOption
+      ? market.outcomes[loserIndex] ?? market.outcomes[0] ?? "Unknown"
+      : market.outcomes[winnerIndex] ?? market.outcomes[0] ?? "Unknown";
 
-  console.log(`[OPEN] market=${market.id} side=${side} option=${selectedOption} entry=${decision.entryCents}`);
-}
+    const selectedCents = Math.round((market.outcomePrices[hasDrawOption ? loserIndex : winnerIndex] ?? 0) * 100);
 
-async function tick(cfg: AutoTraderConfig): Promise<void> {
-  const markets = await fetchPolymarketMarkets({ limit: cfg.marketLimit, baseUrl: cfg.polymarketApiBaseUrl });
-  for (const market of markets) {
-    try {
-      await maybeClosePosition(market, cfg);
-      await maybeOpenPosition(market, cfg);
-    } catch (error) {
-      console.error(`[ERROR] market=${market.id}`, error);
+    const decision = evaluateDecision({
+      selectedOption,
+      selectedCents,
+      hasDrawOption,
+      predictionDiffPct: prediction.differencePct,
+    });
+
+    if (!decision.shouldTrade || !decision.side || decision.entryCents === undefined) return;
+
+    const side = decision.side.startsWith("NO:") ? "NO" : "YES";
+    const { tp, sl } = computeExitTargets(decision.entryCents);
+
+    await placeEngineOrder({
+      action: "BUY",
+      marketId: market.id,
+      option: selectedOption,
+      side,
+      entryCents: decision.entryCents,
+      prediction,
+      reason: decision.reason,
+    });
+
+    positions.set(market.id, {
+      marketId: market.id,
+      optionLabel: selectedOption,
+      side,
+      entryCents: decision.entryCents,
+      takeProfitCents: tp,
+      stopLossCents: sl,
+      openedAt: new Date().toISOString(),
+    });
+
+    console.log(`[OPEN] market=${market.id} side=${side} option=${selectedOption} entry=${decision.entryCents}`);
+  }
+
+  async function tick(): Promise<void> {
+    const markets = await fetchPolymarketMarkets({ limit: cfg.marketLimit, baseUrl: cfg.polymarketApiBaseUrl });
+    for (const market of markets) {
+      try {
+        await maybeClosePosition(market);
+        await maybeOpenPosition(market);
+      } catch (error) {
+        console.error(`[ERROR] market=${market.id}`, error);
+      }
     }
   }
+
+  async function start(): Promise<AutoTraderState> {
+    if (timer) return getStatus();
+    validateConfig();
+    startedAt = new Date().toISOString();
+    await tick();
+    timer = setInterval(() => {
+      void tick();
+    }, cfg.pollingSeconds * 1000);
+    return getStatus();
+  }
+
+  function stop(): AutoTraderState {
+    if (timer) clearInterval(timer);
+    timer = null;
+    return getStatus();
+  }
+
+  function getStatus(): AutoTraderState {
+    return {
+      running: Boolean(timer),
+      startedAt,
+      positions: positions.size,
+      dryRun: cfg.dryRun,
+    };
+  }
+
+  return { start, stop, getStatus, tick };
 }
 
 async function main(): Promise<void> {
-  const cfg = readConfig();
-  if (!cfg.predictionApiBaseUrl) throw new Error("PREDICTION_API_BASE_URL is required");
-  if (!cfg.destinyEngineApiBaseUrl && !cfg.dryRun) {
-    throw new Error("DESTINY_ENGINE_API_BASE_URL is required when DRY_RUN=false");
-  }
-
-  console.log("Auto trader started", {
-    ...cfg,
-    predictionApiKey: cfg.predictionApiKey ? "***set***" : "",
-    destinyEngineApiKey: cfg.destinyEngineApiKey ? "***set***" : "",
-  });
-
-  await tick(cfg);
-  setInterval(() => {
-    void tick(cfg);
-  }, cfg.pollingSeconds * 1000);
+  const trader = createAutoTrader(readConfigFromEnv());
+  console.log("Auto trader starting...");
+  const status = await trader.start();
+  console.log("Auto trader started", status);
 }
 
-void main();
+if (import.meta.url === `file://${process.argv[1]}`) {
+  void main();
+}

@@ -5,6 +5,26 @@ This project supports:
 1. **MCP runtime** (`src/index.ts`) for tool-based orchestration.
 2. **Auto-trader runtime** (`src/autotrader.ts`) for continuous buy/sell execution.
 
+## Do we need an LLM API key?
+
+**No, not for trading automation itself.**
+
+Your start/stop auto-trading flow works with:
+- Polymarket market data API
+- MeroJotis prediction API
+- Destiny Engine order API
+
+You only need an LLM provider key if you want extra natural-language features (chat summaries, reasoning assistant, etc.). It is **not required** for the core bot.
+
+## Start/Stop controls
+
+From MCP you can now call:
+- `start_auto_trader`
+- `stop_auto_trader`
+- `get_auto_trader_status`
+
+This enables the behavior you asked for: say “start”, it begins polling upcoming markets, checking outcomes/prices, fetching predictions, and auto buy/sell per rules; say “stop”, it halts the loop.
+
 ## Polymarket integration
 
 - Market ingestion is integrated via Polymarket Gamma API:
@@ -76,7 +96,7 @@ npm run build
 npm start
 ```
 
-### Auto-trader (paper mode)
+### Auto-trader process mode
 
 ```bash
 PREDICTION_API_BASE_URL=https://your-mj-api.example.com \
@@ -84,7 +104,7 @@ DRY_RUN=true \
 npm run start:bot
 ```
 
-### Auto-trader (live mode)
+### Auto-trader live mode
 
 ```bash
 PREDICTION_API_BASE_URL=https://your-mj-api.example.com \
