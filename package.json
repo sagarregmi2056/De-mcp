@@ -1,0 +1,23 @@
+{
+  "name": "de-polymarket-mcp",
+  "version": "0.1.0",
+  "description": "DE Polymarket auto-trader + controller (TypeScript/Node.js)",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "check": "tsc --noEmit",
+    "start:bot": "node dist/autotrader.js",
+    "dev:bot": "tsx src/autotrader.ts"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
