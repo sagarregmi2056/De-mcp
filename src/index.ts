@@ -1,6 +1,8 @@
+import { loadDotEnv } from "./env.js";
 import { createInterface } from "node:readline";
 import { createAutoTrader, readConfigFromEnv } from "./autotrader.js";
 
+loadDotEnv();
 const trader = createAutoTrader(readConfigFromEnv());
 
 function printHelp(): void {
