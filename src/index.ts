@@ -1,115 +1,78 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
-import {
-  detectMarketType,
-  evaluateDecision,
-  fetchPolymarketMarkets,
-  sendPredictionRequest,
-} from "./services.js";
-import { PredictionRequestBody } from "./types.js";
-import { buildTeamPredictionPayload } from "./mapping.js";
+import { createInterface } from "node:readline";
+import { createAutoTrader, readConfigFromEnv } from "./autotrader.js";
 
-const server = new McpServer({
-  name: "de-polymarket-mcp",
-  version: "0.1.0",
-});
+const trader = createAutoTrader(readConfigFromEnv());
 
-server.registerTool(
-  "fetch_polymarket_markets",
-  {
-    title: "Fetch Polymarket Sports Markets",
-    description: "Fetch active markets from Polymarket and tag them for Destiny Engine flow.",
-    inputSchema: { limit: z.number().int().min(1).max(100).default(20) },
-  },
-  async ({ limit }) => {
-    const markets = await fetchPolymarketMarkets(limit);
-    const tagged = markets.map((m) => ({ ...m, marketType: detectMarketType(m) }));
+function printHelp(): void {
+  console.log("DE Trader Controller ready.");
+  console.log("Commands: start | stop | status | tick | help | exit");
+}
 
-    return {
-      content: [{ type: "text", text: JSON.stringify(tagged, null, 2) }],
-    };
-  },
-);
+async function handleCommand(cmd: string): Promise<boolean> {
+  const normalized = cmd.trim().toLowerCase();
 
-server.registerTool(
-  "submit_mj_prediction",
-  {
-    title: "Submit MJ Prediction Request",
-    description:
-      "Send normalized team/1v1 market payload to MJ (Mero Jyotis) prediction API /prediction endpoint.",
-    inputSchema: {
-      predictionApiBaseUrl: z.string().url(),
-      payload: z.custom<PredictionRequestBody>(),
-    },
-  },
-  async ({ predictionApiBaseUrl, payload }) => {
-    const result = await sendPredictionRequest(predictionApiBaseUrl, payload);
-    return {
-      content: [{ type: "text", text: result }],
-    };
-  },
-);
+  if (normalized === "start") {
+    const status = await trader.start();
+    console.log(JSON.stringify(status, null, 2));
+    return true;
+  }
 
-server.registerTool(
-  "evaluate_mj_trade_rules",
-  {
-    title: "Evaluate MJ Execution Rules",
-    description: "Apply the MJ trading rules to decide entry side and exit plan.",
-    inputSchema: {
-      selectedOption: z.string(),
-      selectedCents: z.number().min(0).max(100),
-      hasDrawOption: z.boolean().default(false),
-      predictionDiffPct: z.number().min(0).max(100),
-    },
-  },
-  async (input) => {
-    const decision = evaluateDecision(input);
-    return {
-      content: [{ type: "text", text: JSON.stringify(decision, null, 2) }],
-    };
-  },
-);
+  if (normalized === "stop") {
+    const status = trader.stop();
+    console.log(JSON.stringify(status, null, 2));
+    return true;
+  }
 
+  if (normalized === "status") {
+    console.log(JSON.stringify(trader.getStatus(), null, 2));
+    return true;
+  }
 
-server.registerTool(
-  "build_team_prediction_payload",
-  {
-    title: "Build Team Payload with Captain/Coach Fallback",
-    description:
-      "Build MJ /prediction payload for team markets. Uses captain data, falls back to coach when captain is unavailable.",
-    inputSchema: {
-      eventType: z.string(),
-      event: z.object({
-        event_name: z.string(),
-        event_date: z.string(),
-        event_time: z.string(),
-        event_location: z.string(),
-        event_timezone: z.string(),
-        event_lat: z.number(),
-        event_lon: z.number(),
-        event_lat_dir: z.string(),
-        event_lon_dir: z.string(),
-      }),
-      teamA: z.object({
-        teamName: z.string(),
-        captain: z.any().optional(),
-        coach: z.any().optional(),
-      }),
-      teamB: z.object({
-        teamName: z.string(),
-        captain: z.any().optional(),
-        coach: z.any().optional(),
-      }),
-    },
-  },
-  async ({ eventType, event, teamA, teamB }) => {
-    const payload = buildTeamPredictionPayload({ eventType, event, teamA, teamB });
-    return {
-      content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
-    };
-  },
-);
+  if (normalized === "tick") {
+    await trader.tick();
+    console.log(JSON.stringify(trader.getStatus(), null, 2));
+    return true;
+  }
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+  if (normalized === "help") {
+    printHelp();
+    return true;
+  }
+
+  if (normalized === "exit" || normalized === "quit") {
+    trader.stop();
+    return false;
+  }
+
+  console.log("Unknown command. Type 'help'.");
+  return true;
+}
+
+async function main(): Promise<void> {
+  printHelp();
+
+  if ((process.env.AUTO_START ?? "false").toLowerCase() === "true") {
+    const status = await trader.start();
+    console.log("Auto-started", JSON.stringify(status, null, 2));
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+
+  rl.on("line", async (line) => {
+    try {
+      const keepGoing = await handleCommand(line);
+      if (!keepGoing) {
+        rl.close();
+      }
+    } catch (error) {
+      console.error("Command failed", error);
+    }
+  });
+
+  rl.on("close", () => {
+    trader.stop();
+    process.exit(0);
+  });
+}
+
+void main();

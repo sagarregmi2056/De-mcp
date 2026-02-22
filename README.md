@@ -1,4 +1,4 @@
-# DE Polymarket MCP Server (TypeScript + Node.js)
+# DE Polymarket Auto-Trader (TypeScript + Node.js)
 
 This repository now has **two runtime modes**:
 

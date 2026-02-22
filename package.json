@@ -1,7 +1,7 @@
 {
   "name": "de-polymarket-mcp",
   "version": "0.1.0",
-  "description": "MCP server for Destiny Engine sports market ingestion and MJ prediction routing",
+  "description": "DE Polymarket auto-trader + controller (TypeScript/Node.js)",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -13,7 +13,6 @@
     "dev:bot": "tsx src/autotrader.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.17.4",
     "zod": "^3.23.8"
   },
   "devDependencies": {
