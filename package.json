@@ -10,7 +10,8 @@
     "dev": "tsx src/index.ts",
     "check": "tsc --noEmit",
     "start:bot": "node dist/autotrader.js",
-    "dev:bot": "tsx src/autotrader.ts"
+    "dev:bot": "tsx src/autotrader.ts",
+    "start:mcp": "node dist/mcp-server.js"
   },
   "dependencies": {
     "zod": "^3.23.8"
@@ -19,5 +20,8 @@
     "@types/node": "^22.10.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
+  },
+  "bin": {
+    "mcp-server-everything": "./bin/mcp-server-everything.js"
   }
 }

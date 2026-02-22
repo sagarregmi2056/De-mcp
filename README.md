@@ -81,6 +81,31 @@ tick
 exit
 ```
 
+
+## MCP Inspector fix (ENOENT: mcp-server-everything)
+
+That error means the command `mcp-server-everything` was not found in PATH.
+This repo now includes a local binary + MCP stdio server.
+
+### Use with MCP Inspector
+
+1. Build first:
+
+```bash
+npm install
+npm run build
+```
+
+2. In Inspector, set:
+- **command**: `mcp-server-everything`
+- **args**: *(empty)*
+
+Or use direct Node command:
+- **command**: `node`
+- **args**: `dist/mcp-server.js`
+
+If you pass `dist/index.js`, that starts CLI mode (not MCP protocol), so Inspector will fail.
+
 ## Direct bot mode
 
 ```bash
