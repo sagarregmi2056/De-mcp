@@ -37,21 +37,23 @@ export async function fetchPolymarketMarkets(options: FetchPolymarketOptions = {
     throw new Error("Unexpected Polymarket response format");
   }
 
-  return json
-    .map((item) => {
-      const parsed = PolyMarketSchema.safeParse(item);
-      if (!parsed.success) return null;
+  const markets: NormalizedMarket[] = [];
 
-      const outcomePrices = (parsed.data.outcomePrices ?? []).map((v) => Number(v));
-      return {
-        id: String(parsed.data.id),
-        question: parsed.data.question,
-        outcomes: parsed.data.outcomes ?? [],
-        outcomePrices,
-        eventDate: parsed.data.endDate,
-      } satisfies NormalizedMarket;
-    })
-    .filter((v): v is NormalizedMarket => Boolean(v));
+  for (const item of json) {
+    const parsed = PolyMarketSchema.safeParse(item);
+    if (!parsed.success) continue;
+
+    const outcomePrices = (parsed.data.outcomePrices ?? []).map((v) => Number(v));
+    markets.push({
+      id: String(parsed.data.id),
+      question: parsed.data.question,
+      outcomes: parsed.data.outcomes ?? [],
+      outcomePrices,
+      eventDate: parsed.data.endDate,
+    });
+  }
+
+  return markets;
 }
 
 export function detectMarketType(market: NormalizedMarket): MarketType {
@@ -62,14 +64,18 @@ export function detectMarketType(market: NormalizedMarket): MarketType {
 }
 
 export async function sendPredictionRequest(
-  predictionApiBaseUrl: string,
+  predictionApiUrl: string,
   body: PredictionRequestBody,
-  apiKey?: string,
+  apiToken?: string,
 ): Promise<unknown> {
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+  if (apiToken) headers["De-Token"] = apiToken;
 
-  const response = await fetch(`${predictionApiBaseUrl.replace(/\/$/, "")}/prediction`, {
+  const url = predictionApiUrl.includes("/prediction")
+    ? predictionApiUrl
+    : `${predictionApiUrl.replace(/\/$/, "")}/prediction`;
+
+  const response = await fetch(url, {
     method: "POST",
     headers,
     body: JSON.stringify(body),

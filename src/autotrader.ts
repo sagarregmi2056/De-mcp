@@ -7,10 +7,11 @@ import {
   sendPredictionRequest,
 } from "./services.js";
 import { CandidateInput, EventInput, NormalizedMarket } from "./types.js";
+import { enrichTeamsEventFromGemini } from "./gemini.js";
 
 export interface AutoTraderConfig {
-  predictionApiBaseUrl: string;
-  predictionApiKey: string;
+  predictionApiUrl: string;
+  predictionApiToken: string;
   destinyEngineApiBaseUrl: string;
   destinyEngineApiKey: string;
   polymarketApiBaseUrl: string;
@@ -18,6 +19,9 @@ export interface AutoTraderConfig {
   marketLimit: number;
   dryRun: boolean;
   approvedMarketKeywords: string[];
+  geminiApiKey: string;
+  geminiModel: string;
+  geminiUseSearch: boolean;
 }
 
 type PositionSide = "YES" | "NO";
@@ -41,8 +45,8 @@ interface AutoTraderState {
 
 export function readConfigFromEnv(): AutoTraderConfig {
   return {
-    predictionApiBaseUrl: process.env.PREDICTION_API_BASE_URL ?? "",
-    predictionApiKey: process.env.PREDICTION_API_KEY ?? "",
+    predictionApiUrl: process.env.PREDICTION_API_URL ?? process.env.PREDICTION_API_BASE_URL ?? "",
+    predictionApiToken: process.env.PREDICTION_API_TOKEN ?? process.env.PREDICTION_API_KEY ?? "",
     destinyEngineApiBaseUrl: process.env.DESTINY_ENGINE_API_BASE_URL ?? "",
     destinyEngineApiKey: process.env.DESTINY_ENGINE_API_KEY ?? "",
     polymarketApiBaseUrl: process.env.POLYMARKET_API_BASE_URL ?? "https://gamma-api.polymarket.com",
@@ -53,6 +57,9 @@ export function readConfigFromEnv(): AutoTraderConfig {
       .split(",")
       .map((v) => v.trim().toLowerCase())
       .filter(Boolean),
+    geminiApiKey: process.env.GEMINI_API_KEY ?? "",
+    geminiModel: process.env.GEMINI_MODEL_NAME ?? process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
+    geminiUseSearch: (process.env.GEMINI_USE_SEARCH ?? "true").toLowerCase() !== "false",
   };
 }
 
@@ -63,7 +70,7 @@ export function createAutoTrader(config: AutoTraderConfig) {
   let startedAt: string | null = null;
 
   function validateConfig(): void {
-    if (!cfg.predictionApiBaseUrl) throw new Error("PREDICTION_API_BASE_URL is required");
+    if (!cfg.predictionApiUrl) throw new Error("PREDICTION_API_URL (or PREDICTION_API_BASE_URL) is required");
     if (!cfg.destinyEngineApiBaseUrl && !cfg.dryRun) {
       throw new Error("DESTINY_ENGINE_API_BASE_URL is required when DRY_RUN=false");
     }
@@ -190,14 +197,26 @@ export function createAutoTrader(config: AutoTraderConfig) {
     if (!teams) return;
 
     const [teamA, teamB] = teams;
-    const payload = buildTeamPredictionPayload({
-      eventType: marketType,
-      event: fallbackEvent(market),
-      teamA: { teamName: teamA, captain: fallbackCandidate(teamA) },
-      teamB: { teamName: teamB, captain: fallbackCandidate(teamB) },
+
+    const geminiEnrichment = await enrichTeamsEventFromGemini({
+      config: {
+        apiKey: cfg.geminiApiKey || undefined,
+        model: cfg.geminiModel,
+        useSearch: cfg.geminiUseSearch,
+      },
+      question: market.question,
+      teamA,
+      teamB,
     });
 
-    const mjRaw = await sendPredictionRequest(cfg.predictionApiBaseUrl, payload, cfg.predictionApiKey || undefined);
+    const payload = buildTeamPredictionPayload({
+      eventType: marketType,
+      event: geminiEnrichment?.event ?? fallbackEvent(market),
+      teamA: geminiEnrichment?.teamA ?? { teamName: teamA, captain: fallbackCandidate(teamA) },
+      teamB: geminiEnrichment?.teamB ?? { teamName: teamB, captain: fallbackCandidate(teamB) },
+    });
+
+    const mjRaw = await sendPredictionRequest(cfg.predictionApiUrl, payload, cfg.predictionApiToken || undefined);
     const prediction = parseMjPredictionResponse(mjRaw);
 
     const winnerIndex = findOutcomeIndexByName(market.outcomes, prediction.winnerName);

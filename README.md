@@ -1,117 +1,69 @@
-# DE Polymarket MCP Server (TypeScript + Node.js)
+# DE Polymarket Auto-Trader (TypeScript + Node.js)
 
-This project supports:
+This branch is ready to run directly.
 
-1. **MCP runtime** (`src/index.ts`) for tool-based orchestration.
-2. **Auto-trader runtime** (`src/autotrader.ts`) for continuous buy/sell execution.
+## Final runtime flow
 
-## Do we need an LLM API key?
+- Fetch active markets from Polymarket.
+- Optionally enrich event/team/captain/coach data with Gemini + web search.
+- Send clean payload to Mero Jotis prediction endpoint.
+- Apply strategy rules and auto BUY/SELL via Destiny Engine.
 
-**No, not for trading automation itself.**
+## Mero Jotis API integration (updated)
 
-Your start/stop auto-trading flow works with:
-- Polymarket market data API
-- MeroJotis prediction API
-- Destiny Engine order API
+The bot now supports your endpoint/token style directly:
 
-You only need an LLM provider key if you want extra natural-language features (chat summaries, reasoning assistant, etc.). It is **not required** for the core bot.
+- `PREDICTION_API_URL` (can be full URL, e.g. `https://.../prediction`)
+- `PREDICTION_API_TOKEN` (sent as `De-Token` header)
 
-## Start/Stop controls
+If `PREDICTION_API_URL` is a base URL, `/prediction` is appended automatically.
 
-From MCP you can now call:
-- `start_auto_trader`
-- `stop_auto_trader`
-- `get_auto_trader_status`
+## Gemini integration
 
-This enables the behavior you asked for: say “start”, it begins polling upcoming markets, checking outcomes/prices, fetching predictions, and auto buy/sell per rules; say “stop”, it halts the loop.
+Optional but recommended for better enrichment fields:
 
-## Polymarket integration
+- `GEMINI_API_KEY`
+- `GEMINI_MODEL_NAME` (default `gemini-2.5-flash`)
+- `GEMINI_USE_SEARCH` (default `true`)
 
-- Market ingestion is integrated via Polymarket Gamma API:
-  - default base URL: `https://gamma-api.polymarket.com`
-  - endpoint used: `GET /markets?active=true&closed=false&limit=N`
-- Configure custom base URL with `POLYMARKET_API_BASE_URL`.
+## Required credentials
 
-## MeroJotis (MJ) prediction integration
+### Minimum
+- `PREDICTION_API_URL`
 
-- Sends payload to `POST {PREDICTION_API_BASE_URL}/prediction`.
-- Parses response using `PersonA.WinPercentage` and `PersonB.WinPercentage` to choose winner and edge.
-
-## Auto buy/sell behavior implemented
-
-Each polling cycle:
-
-1. Fetch active markets from Polymarket.
-2. Filter to approved markets (`APPROVED_MARKET_KEYWORDS`).
-3. Build prediction payload and call MJ prediction API.
-4. Choose side based on your rules:
-   - draw market => trade `NO` on losing candidate
-   - otherwise trade `YES` on predicted winner
-5. Open BUY order on Destiny Engine.
-6. Monitor open positions and SELL automatically based on rules:
-   - entry < 40c => TP 80c, SL 10c
-   - 40c <= entry < 50c => TP 90c, SL 20c
-   - entry >= 50c => hold to resolution (no TP/SL sell trigger)
-
-No hedging is used.
-
-## Credentials required
-
-### Required
-
-- `PREDICTION_API_BASE_URL`
-  - Your MeroJotis prediction engine base URL.
-
-### Optional (depending on your deployment)
-
-- `PREDICTION_API_KEY`
-  - Bearer token for MJ API if auth is enabled.
-- `POLYMARKET_API_BASE_URL`
-  - Override Polymarket API host (defaults to gamma public API).
-
-### Required for live trading (DRY_RUN=false)
-
+### Live trading (`DRY_RUN=false`)
 - `DESTINY_ENGINE_API_BASE_URL`
-  - Base URL for order placement (`POST /orders`).
+
+### Optional
+- `PREDICTION_API_TOKEN`
 - `DESTINY_ENGINE_API_KEY`
-  - Bearer token for Destiny Engine auth.
-
-## Environment variables
-
-- `DRY_RUN` (default `true`)
-- `POLLING_SECONDS` (default `30`)
-- `MARKET_LIMIT` (default `30`)
-- `APPROVED_MARKET_KEYWORDS` (comma-separated allowlist)
+- `POLYMARKET_API_BASE_URL`
+- Gemini vars above
 
 ## Run
 
 ```bash
 npm install
 npm run build
-```
-
-### MCP server
-
-```bash
 npm start
 ```
 
-### Auto-trader process mode
+Controller commands:
 
-```bash
-PREDICTION_API_BASE_URL=https://your-mj-api.example.com \
-DRY_RUN=true \
-npm run start:bot
+```text
+start
+status
+stop
+tick
+exit
 ```
 
-### Auto-trader live mode
+## Direct bot mode
 
 ```bash
-PREDICTION_API_BASE_URL=https://your-mj-api.example.com \
-PREDICTION_API_KEY=... \
-DESTINY_ENGINE_API_BASE_URL=https://your-de-api.example.com \
-DESTINY_ENGINE_API_KEY=... \
-DRY_RUN=false \
-APPROVED_MARKET_KEYWORDS="nfl,super bowl" \
+PREDICTION_API_URL=https://de.ideapreneurnepal.com.np/prediction \
+PREDICTION_API_TOKEN=your_token \
+GEMINI_MODEL_NAME=gemini-2.5-flash \
+DRY_RUN=true \
 npm run start:bot
 ```
