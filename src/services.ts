@@ -4,6 +4,7 @@ import {
   PredictionRequestBody,
   TradingDecision,
   MarketType,
+  PredictionOutcome,
 } from "./types.js";
 
 const PolyMarketSchema = z.object({
@@ -12,11 +13,16 @@ const PolyMarketSchema = z.object({
   outcomes: z.array(z.string()).optional(),
   outcomePrices: z.array(z.union([z.number(), z.string()])).optional(),
   endDate: z.string().optional(),
-  description: z.string().optional(),
 });
 
-export async function fetchPolymarketMarkets(limit = 20): Promise<NormalizedMarket[]> {
-  const url = new URL("https://gamma-api.polymarket.com/markets");
+interface FetchPolymarketOptions {
+  limit?: number;
+  baseUrl?: string;
+}
+
+export async function fetchPolymarketMarkets(options: FetchPolymarketOptions = {}): Promise<NormalizedMarket[]> {
+  const { limit = 20, baseUrl = "https://gamma-api.polymarket.com" } = options;
+  const url = new URL("/markets", baseUrl);
   url.searchParams.set("active", "true");
   url.searchParams.set("closed", "false");
   url.searchParams.set("limit", String(limit));
@@ -34,9 +40,7 @@ export async function fetchPolymarketMarkets(limit = 20): Promise<NormalizedMark
   return json
     .map((item) => {
       const parsed = PolyMarketSchema.safeParse(item);
-      if (!parsed.success) {
-        return null;
-      }
+      if (!parsed.success) return null;
 
       const outcomePrices = (parsed.data.outcomePrices ?? []).map((v) => Number(v));
       return {
@@ -52,26 +56,22 @@ export async function fetchPolymarketMarkets(limit = 20): Promise<NormalizedMark
 
 export function detectMarketType(market: NormalizedMarket): MarketType {
   const q = `${market.question} ${market.outcomes.join(" ")}`.toLowerCase();
-  if (q.includes(" vs ") || q.includes(" v ")) {
-    return "one_vs_one";
-  }
-
-  if (["team", "club", "fc", "united", "city"].some((k) => q.includes(k))) {
-    return "team";
-  }
-
+  if (q.includes(" vs ") || q.includes(" v ")) return "one_vs_one";
+  if (["team", "club", "fc", "united", "city"].some((k) => q.includes(k))) return "team";
   return "unknown";
 }
 
 export async function sendPredictionRequest(
   predictionApiBaseUrl: string,
   body: PredictionRequestBody,
-): Promise<string> {
+  apiKey?: string,
+): Promise<unknown> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+
   const response = await fetch(`${predictionApiBaseUrl.replace(/\/$/, "")}/prediction`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
+    headers,
     body: JSON.stringify(body),
   });
 
@@ -79,8 +79,40 @@ export async function sendPredictionRequest(
     throw new Error(`Prediction API request failed: ${response.status} ${response.statusText}`);
   }
 
-  const result = await response.json();
-  return typeof result === "string" ? result : JSON.stringify(result);
+  return response.json();
+}
+
+export function parseMjPredictionResponse(result: unknown): PredictionOutcome {
+  const object = result as Record<string, unknown>;
+  const a = object.PersonA as Record<string, unknown> | undefined;
+  const b = object.PersonB as Record<string, unknown> | undefined;
+
+  const aName = String(a?.Name ?? "A");
+  const bName = String(b?.Name ?? "B");
+  const aWin = Number(a?.WinPercentage ?? Number.NaN);
+  const bWin = Number(b?.WinPercentage ?? Number.NaN);
+
+  if (!Number.isFinite(aWin) || !Number.isFinite(bWin)) {
+    throw new Error("MJ response missing PersonA/PersonB WinPercentage fields");
+  }
+
+  if (aWin >= bWin) {
+    return {
+      winnerName: aName,
+      winnerProbability: aWin,
+      loserName: bName,
+      loserProbability: bWin,
+      differencePct: aWin - bWin,
+    };
+  }
+
+  return {
+    winnerName: bName,
+    winnerProbability: bWin,
+    loserName: aName,
+    loserProbability: aWin,
+    differencePct: bWin - aWin,
+  };
 }
 
 interface DecisionInput {
@@ -94,10 +126,7 @@ export function evaluateDecision(input: DecisionInput): TradingDecision {
   const { selectedOption, selectedCents, hasDrawOption, predictionDiffPct } = input;
 
   if (selectedCents < 10) {
-    return {
-      shouldTrade: false,
-      reason: "Avoid market: selected option is below 10 cents.",
-    };
+    return { shouldTrade: false, reason: "Avoid market: selected option is below 10 cents." };
   }
 
   if (selectedCents < 40 && predictionDiffPct < 5) {
@@ -107,12 +136,12 @@ export function evaluateDecision(input: DecisionInput): TradingDecision {
     };
   }
 
-  const side = hasDrawOption ? `NO on losing candidate (selected: ${selectedOption})` : selectedOption;
+  const side = hasDrawOption ? `NO:${selectedOption}` : `YES:${selectedOption}`;
 
-  let exitPlan = "Hold to resolution";
-  if (selectedCents < 40) exitPlan = "Take profit at 80c, stop at 10c";
-  else if (selectedCents < 50) exitPlan = "Take profit at 90c, stop at 20c";
-  else exitPlan = "Hold to resolution (100c win / 0c loss)";
+  let exitPlan = "HOLD_TO_RESOLUTION";
+  if (selectedCents < 40) exitPlan = "TP:80|SL:10";
+  else if (selectedCents < 50) exitPlan = "TP:90|SL:20";
+  else exitPlan = "HOLD_TO_RESOLUTION";
 
   return {
     shouldTrade: true,

@@ -48,3 +48,11 @@ export interface TradingDecision {
   exitPlan?: string;
   reason: string;
 }
+
+export interface PredictionOutcome {
+  winnerName: string;
+  winnerProbability: number;
+  loserName: string;
+  loserProbability: number;
+  differencePct: number;
+}
